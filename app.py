@@ -37,20 +37,29 @@ def wake_handler():
     # 验证请求
     auth_token = request.headers.get('Authorization')
     if not auth_token or not auth_token.startswith('Bearer '):
+        logger.warning("Unauthorized: No Bearer token provided")
         return jsonify({'error': 'Unauthorized'}), 401
     
     incoming_secret = auth_token[7:]  # 移除 'Bearer ' 前缀
+    
+    # 记录接收到的密钥和期望的密钥（只记录部分字符以避免安全风险）
+    logger.info(f"Received secret: {incoming_secret[:4]}... (truncated)")
+    logger.info(f"Expected secret: {KOYEB_SECRET[:4]}... (truncated)")
+    
     if incoming_secret != KOYEB_SECRET:
+        logger.warning(f"Invalid secret provided: {incoming_secret[:4]}...")
         return jsonify({'error': 'Invalid secret'}), 403
     
     data = request.get_json()
     if not data:
+        logger.warning("No JSON data provided")
         return jsonify({'error': 'No JSON data'}), 400
     
     youtube_url = data.get('url')
     chat_id = data.get('chatId')
     
     if not youtube_url or not chat_id:
+        logger.warning(f"Missing parameters: url={youtube_url}, chatId={chat_id}")
         return jsonify({'error': 'Missing parameters'}), 400
     
     try:
@@ -61,6 +70,7 @@ def wake_handler():
         )
         thread.start()
         
+        logger.info(f"Started download for URL: {youtube_url}")
         return jsonify({'status': 'processing', 'message': 'Download started'})
     
     except Exception as e:
