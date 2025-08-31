@@ -42,10 +42,6 @@ def wake_handler():
     
     incoming_secret = auth_token[7:]  # 移除 'Bearer ' 前缀
     
-    # 记录接收到的密钥和期望的密钥（只记录部分字符以避免安全风险）
-    logger.info(f"Received secret: {incoming_secret[:4]}... (truncated)")
-    logger.info(f"Expected secret: {KOYEB_SECRET[:4]}... (truncated)")
-    
     if incoming_secret != KOYEB_SECRET:
         logger.warning(f"Invalid secret provided: {incoming_secret[:4]}...")
         return jsonify({'error': 'Invalid secret'}), 403
@@ -57,6 +53,7 @@ def wake_handler():
     
     youtube_url = data.get('url')
     chat_id = data.get('chatId')
+    quality = data.get('quality', 'medium')  # 接收质量参数
     
     if not youtube_url or not chat_id:
         logger.warning(f"Missing parameters: url={youtube_url}, chatId={chat_id}")
@@ -66,22 +63,22 @@ def wake_handler():
         # 在后台线程中处理下载，避免阻塞
         thread = threading.Thread(
             target=download_and_send,
-            args=(youtube_url, chat_id)
+            args=(youtube_url, chat_id, quality)
         )
         thread.start()
         
-        logger.info(f"Started download for URL: {youtube_url}")
+        logger.info(f"Started download for URL: {youtube_url} with quality: {quality}")
         return jsonify({'status': 'processing', 'message': 'Download started'})
     
     except Exception as e:
         logger.error(f"Error starting download: {e}")
         return jsonify({'error': str(e)}), 500
 
-def download_and_send(youtube_url, chat_id):
+def download_and_send(youtube_url, chat_id, quality='medium'):
     """在后台线程中处理下载和发送"""
     try:
         # 下载视频
-        video_path = download_youtube_video(youtube_url)
+        video_path = download_youtube_video(youtube_url, quality)
         
         # 发送到 Telegram
         asyncio.run(send_to_telegram(chat_id, video_path))
@@ -94,29 +91,24 @@ def download_and_send(youtube_url, chat_id):
         # 发送错误消息到用户
         asyncio.run(send_error_message(chat_id, str(e)))
 
-def download_youtube_video(url):
+def download_youtube_video(url, quality='medium'):
     """使用 yt-dlp 下载视频"""
     with tempfile.NamedTemporaryFile(suffix='.mp4', delete=False) as temp_file:
         temp_path = temp_file.name
     
-    # 首先获取可用格式列表
-    format_cmd = [
-        'yt-dlp',
-        '--list-formats',
-        '--cookies', '/app/cookies.txt',
-        url
-    ]
+    # 根据质量选择格式
+    format_map = {
+        'low': 'best[height<=360]',
+        'medium': 'best[height<=720][filesize<100M]',
+        'high': 'best[height<=1080][filesize<200M]'
+    }
     
-    try:
-        format_result = subprocess.run(format_cmd, check=True, capture_output=True, text=True, timeout=60)
-        logger.info(f"可用格式:\n{format_result.stdout}")
-    except Exception as e:
-        logger.warning(f"无法获取格式列表: {e}")
+    format_selection = format_map.get(quality, 'best[height<=720][filesize<100M]')
     
-    # 使用灵活的格式选择策略
+    # 使用 yt-dlp 下载
     cmd = [
         'yt-dlp',
-        '-f', 'best[filesize<50M]/best[height<=720][filesize<100M]/best[height<=480]/best',
+        '-f', format_selection,
         '--cookies', '/app/cookies.txt',
         '-o', temp_path,
         '--no-warnings',
@@ -131,12 +123,6 @@ def download_youtube_video(url):
         file_size = os.path.getsize(temp_path)
         file_size_mb = file_size / (1024 * 1024)
         logger.info(f"下载完成，文件大小: {file_size_mb:.2f} MB")
-        
-        if file_size_mb > 50:
-            logger.warning(f"文件大小 ({file_size_mb:.2f} MB) 超过 50MB 限制")
-            # 可以选择删除文件并抛出异常，或者继续处理
-            # os.remove(temp_path)
-            # raise Exception(f'视频太大 ({file_size_mb:.2f} MB)，超过 50MB 限制')
         
         return temp_path
     except subprocess.TimeoutExpired:
@@ -170,7 +156,7 @@ async def send_error_message(chat_id, error_msg):
     if "Requested format is not available" in error_msg:
         friendly_msg = "找不到合适的视频格式。视频可能太大或没有可用的格式。"
     elif "filesize" in error_msg.lower():
-        friendly_msg = "视频太大，超过大小限制。请尝试较短的视频。"
+        friendly_msg = "视频太大，超过大小限制。请尝试较短的视频或选择较低质量。"
     elif "Sign in to confirm" in error_msg:
         friendly_msg = "需要验证身份，请稍后再试或联系管理员。"
     
