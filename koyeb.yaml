@@ -1,1 +1,13 @@
-
+name: yt-downloader-bot
+services:
+  - name: app
+    ports:
+      - port: 8080
+        protocol: http
+    env:
+      - name: TELEGRAM_TOKEN
+        value: "你的Telegram Bot Token"
+      - name: KOYEB_SECRET
+        value: "你的隨機安全密鑰"
+    docker:
+      image: koyeb/app:yt-downloader
