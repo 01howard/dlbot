@@ -112,7 +112,7 @@ def download_youtube_video(url, quality='medium'):
     with tempfile.NamedTemporaryFile(suffix='.mp4', delete=False) as temp_file:
         temp_path = temp_file.name
     
-    # 根据质量选择格式
+    # 更简单的格式选择策略
     format_map = {
         'low': 'best[height<=360]',
         'medium': 'best[height<=720]',
@@ -124,7 +124,7 @@ def download_youtube_video(url, quality='medium'):
     # 使用 yt-dlp 下载
     cmd = [
         'yt-dlp',
-        '-f', format_selection,
+        '-f', f'{format_selection}+bestaudio',  # 确保同时选择最佳视频和音频
         '--cookies', '/app/cookies.txt',
         '-o', temp_path,
         '--no-warnings',
@@ -133,19 +133,26 @@ def download_youtube_video(url, quality='medium'):
     ]
     
     try:
-        subprocess.run(cmd, check=True, timeout=300)
+        result = subprocess.run(cmd, check=True, timeout=300, capture_output=True, text=True)
+        logger.info(f"yt-dlp 输出: {result.stdout}")
+        if result.stderr:
+            logger.warning(f"yt-dlp 错误输出: {result.stderr}")
         
         # 检查最终文件大小
         file_size = os.path.getsize(temp_path)
         file_size_mb = file_size / (1024 * 1024)
         logger.info(f"下载完成，文件大小: {file_size_mb:.2f} MB")
         
+        if file_size_mb == 0:
+            raise Exception('下载的文件大小为0，可能是格式选择问题')
+            
         return temp_path
     except subprocess.TimeoutExpired:
         os.remove(temp_path)
         raise Exception('下载超时，请稍后再试')
     except subprocess.CalledProcessError as e:
         os.remove(temp_path)
+        logger.error(f"yt-dlp 命令失败: {e.stderr if e.stderr else e.stdout}")
         raise Exception(f'下载失败: {e}')
     except Exception as e:
         os.remove(temp_path)
@@ -226,11 +233,11 @@ async def send_to_telegram(chat_id, file_path):
         raise Exception(f'文件太大 ({file_size_mb:.2f} MB)，超过50MB限制')
     
     with open(file_path, 'rb') as video_file:
+        # 移除 timeout 参数，使用默认值
         await bot.send_video(
             chat_id=chat_id,
             video=video_file,
-            caption='您的视频已准备好！',
-            timeout=120
+            caption='您的视频已准备好！'
         )
 
 async def send_error_message(chat_id, error_msg):
