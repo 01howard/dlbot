@@ -5,6 +5,11 @@ import tempfile
 from telegram import Bot
 import asyncio
 import threading
+import logging
+
+# 设置日志
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
 
@@ -27,7 +32,7 @@ def health_check():
     return jsonify({'status': 'healthy'}), 200
 
 @app.route('/wake', methods=['POST'])
-async def wake_handler():
+def wake_handler():
     """被 Cloudflare Workers 唤醒的端点"""
     # 验证请求
     auth_token = request.headers.get('Authorization')
@@ -59,6 +64,7 @@ async def wake_handler():
         return jsonify({'status': 'processing', 'message': 'Download started'})
     
     except Exception as e:
+        logger.error(f"Error starting download: {e}")
         return jsonify({'error': str(e)}), 500
 
 def download_and_send(youtube_url, chat_id):
@@ -74,7 +80,9 @@ def download_and_send(youtube_url, chat_id):
         os.remove(video_path)
         
     except Exception as e:
-        print(f"Error in download_and_send: {e}")
+        logger.error(f"Error in download_and_send: {e}")
+        # 发送错误消息到用户
+        asyncio.run(send_error_message(chat_id, str(e)))
 
 def download_youtube_video(url):
     """使用 yt-dlp 下载视频"""
@@ -95,10 +103,13 @@ def download_youtube_video(url):
         return temp_path
     except subprocess.TimeoutExpired:
         os.remove(temp_path)
-        raise Exception('Download timeout')
+        raise Exception('下载超时，请稍后再试')
     except subprocess.CalledProcessError as e:
         os.remove(temp_path)
-        raise Exception(f'Download failed: {e}')
+        raise Exception(f'下载失败: {e}')
+    except Exception as e:
+        os.remove(temp_path)
+        raise Exception(f'下载过程中出现错误: {e}')
 
 async def send_to_telegram(chat_id, file_path):
     """发送文件到 Telegram"""
@@ -111,6 +122,14 @@ async def send_to_telegram(chat_id, file_path):
             caption='您的视频已准备好！',
             timeout=120
         )
+
+async def send_error_message(chat_id, error_msg):
+    """发送错误消息到 Telegram"""
+    bot = Bot(token=TELEGRAM_TOKEN)
+    await bot.send_message(
+        chat_id=chat_id,
+        text=f"处理视频时出现错误: {error_msg}"
+    )
 
 if __name__ == '__main__':
     # 使用生产环境的 WSGI 服务器
