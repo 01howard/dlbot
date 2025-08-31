@@ -99,18 +99,45 @@ def download_youtube_video(url):
     with tempfile.NamedTemporaryFile(suffix='.mp4', delete=False) as temp_file:
         temp_path = temp_file.name
     
-    # 使用 yt-dlp 下载，添加 cookies 参数
+    # 首先获取可用格式列表
+    format_cmd = [
+        'yt-dlp',
+        '--list-formats',
+        '--cookies', '/app/cookies.txt',
+        url
+    ]
+    
+    try:
+        format_result = subprocess.run(format_cmd, check=True, capture_output=True, text=True, timeout=60)
+        logger.info(f"可用格式:\n{format_result.stdout}")
+    except Exception as e:
+        logger.warning(f"无法获取格式列表: {e}")
+    
+    # 使用灵活的格式选择策略
     cmd = [
         'yt-dlp',
-        '-f', 'best[filesize<50M]',  # 限制文件大小
-        '--cookies', '/app/cookies.txt',  # 添加 cookies 文件路径
+        '-f', 'best[filesize<50M]/best[height<=720][filesize<100M]/best[height<=480]/best',
+        '--cookies', '/app/cookies.txt',
         '-o', temp_path,
         '--no-warnings',
+        '--merge-output-format', 'mp4',
         url
     ]
     
     try:
         subprocess.run(cmd, check=True, timeout=300)
+        
+        # 检查最终文件大小
+        file_size = os.path.getsize(temp_path)
+        file_size_mb = file_size / (1024 * 1024)
+        logger.info(f"下载完成，文件大小: {file_size_mb:.2f} MB")
+        
+        if file_size_mb > 50:
+            logger.warning(f"文件大小 ({file_size_mb:.2f} MB) 超过 50MB 限制")
+            # 可以选择删除文件并抛出异常，或者继续处理
+            # os.remove(temp_path)
+            # raise Exception(f'视频太大 ({file_size_mb:.2f} MB)，超过 50MB 限制')
+        
         return temp_path
     except subprocess.TimeoutExpired:
         os.remove(temp_path)
@@ -137,9 +164,19 @@ async def send_to_telegram(chat_id, file_path):
 async def send_error_message(chat_id, error_msg):
     """发送错误消息到 Telegram"""
     bot = Bot(token=TELEGRAM_TOKEN)
+    
+    # 提供更友好的错误消息
+    friendly_msg = error_msg
+    if "Requested format is not available" in error_msg:
+        friendly_msg = "找不到合适的视频格式。视频可能太大或没有可用的格式。"
+    elif "filesize" in error_msg.lower():
+        friendly_msg = "视频太大，超过大小限制。请尝试较短的视频。"
+    elif "Sign in to confirm" in error_msg:
+        friendly_msg = "需要验证身份，请稍后再试或联系管理员。"
+    
     await bot.send_message(
         chat_id=chat_id,
-        text=f"处理视频时出现错误: {error_msg}"
+        text=f"处理视频时出现错误: {friendly_msg}"
     )
 
 if __name__ == '__main__':
