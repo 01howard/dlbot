@@ -6,6 +6,7 @@ from telegram import Bot
 import asyncio
 import threading
 import logging
+import math
 
 # 设置日志
 logging.basicConfig(level=logging.INFO)
@@ -80,6 +81,21 @@ def download_and_send(youtube_url, chat_id, quality='medium'):
         # 下载视频
         video_path = download_youtube_video(youtube_url, quality)
         
+        # 检查文件大小，如果超过45MB则压缩（留一些余量）
+        file_size = os.path.getsize(video_path)
+        file_size_mb = file_size / (1024 * 1024)
+        
+        if file_size_mb > 45:  # 超过45MB就压缩
+            logger.info(f"文件大小 {file_size_mb:.2f} MB 超过45MB，开始压缩...")
+            compressed_path = compress_video(video_path)
+            os.remove(video_path)  # 删除原始文件
+            video_path = compressed_path  # 使用压缩后的文件
+            
+            # 检查压缩后的文件大小
+            compressed_size = os.path.getsize(video_path)
+            compressed_size_mb = compressed_size / (1024 * 1024)
+            logger.info(f"压缩完成，压缩后大小: {compressed_size_mb:.2f} MB")
+        
         # 发送到 Telegram
         asyncio.run(send_to_telegram(chat_id, video_path))
         
@@ -99,11 +115,11 @@ def download_youtube_video(url, quality='medium'):
     # 根据质量选择格式
     format_map = {
         'low': 'best[height<=360]',
-        'medium': 'best[height<=720][filesize<100M]',
-        'high': 'best[height<=1080][filesize<200M]'
+        'medium': 'best[height<=720]',
+        'high': 'best[height<=1080]'
     }
     
-    format_selection = format_map.get(quality, 'best[height<=720][filesize<100M]')
+    format_selection = format_map.get(quality, 'best[height<=720]')
     
     # 使用 yt-dlp 下载
     cmd = [
@@ -135,9 +151,79 @@ def download_youtube_video(url, quality='medium'):
         os.remove(temp_path)
         raise Exception(f'下载过程中出现错误: {e}')
 
+def compress_video(input_path, target_size_mb=45):
+    """使用 FFmpeg 压缩视频到指定大小"""
+    # 获取视频信息
+    cmd = [
+        'ffprobe',
+        '-v', 'error',
+        '-select_streams', 'v:0',
+        '-show_entries', 'stream=duration,width,height',
+        '-of', 'csv=p=0',
+        input_path
+    ]
+    
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, check=True)
+        duration, width, height = map(float, result.stdout.strip().split(','))
+    except Exception as e:
+        logger.warning(f"无法获取视频信息: {e}")
+        duration, width, height = 60, 1280, 720  # 默认值
+    
+    # 计算目标比特率 (kbps)
+    target_bitrate = int((target_size_mb * 8192) / duration)  # 8 * 1024 = 8192
+    
+    # 根据原始分辨率调整比特率
+    if width * height > 1280 * 720:  # 如果分辨率高于720p
+        target_bitrate = min(target_bitrate, 2000)  # 限制最大比特率
+    elif width * height > 854 * 480:  # 如果分辨率高于480p
+        target_bitrate = min(target_bitrate, 1500)
+    else:
+        target_bitrate = min(target_bitrate, 1000)
+    
+    # 创建输出文件路径
+    with tempfile.NamedTemporaryFile(suffix='.mp4', delete=False) as temp_file:
+        output_path = temp_file.name
+    
+    # 使用 FFmpeg 压缩视频
+    cmd = [
+        'ffmpeg',
+        '-i', input_path,
+        '-c:v', 'libx264',
+        '-b:v', f'{target_bitrate}k',
+        '-maxrate', f'{target_bitrate}k',
+        '-bufsize', f'{target_bitrate * 2}k',
+        '-preset', 'fast',
+        '-c:a', 'aac',
+        '-b:a', '128k',
+        '-y',  # 覆盖输出文件
+        output_path
+    ]
+    
+    try:
+        subprocess.run(cmd, check=True, timeout=600)  # 压缩可能需要更长时间
+        return output_path
+    except subprocess.TimeoutExpired:
+        os.remove(output_path)
+        raise Exception('压缩超时，请稍后再试')
+    except subprocess.CalledProcessError as e:
+        os.remove(output_path)
+        raise Exception(f'压缩失败: {e}')
+    except Exception as e:
+        os.remove(output_path)
+        raise Exception(f'压缩过程中出现错误: {e}')
+
 async def send_to_telegram(chat_id, file_path):
     """发送文件到 Telegram"""
     bot = Bot(token=TELEGRAM_TOKEN)
+    
+    # 检查文件大小
+    file_size = os.path.getsize(file_path)
+    file_size_mb = file_size / (1024 * 1024)
+    
+    if file_size_mb > 50:
+        logger.warning(f"文件大小 {file_size_mb:.2f} MB 仍然超过50MB限制")
+        raise Exception(f'文件太大 ({file_size_mb:.2f} MB)，超过50MB限制')
     
     with open(file_path, 'rb') as video_file:
         await bot.send_video(
@@ -156,7 +242,7 @@ async def send_error_message(chat_id, error_msg):
     if "Requested format is not available" in error_msg:
         friendly_msg = "找不到合适的视频格式。视频可能太大或没有可用的格式。"
     elif "filesize" in error_msg.lower():
-        friendly_msg = "视频太大，超过大小限制。请尝试较短的视频或选择较低质量。"
+        friendly_msg = "视频太大，超过大小限制。已尝试压缩但仍然过大。"
     elif "Sign in to confirm" in error_msg:
         friendly_msg = "需要验证身份，请稍后再试或联系管理员。"
     
