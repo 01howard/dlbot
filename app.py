@@ -6,7 +6,6 @@ from telegram import Bot
 import asyncio
 import threading
 import logging
-import math
 
 # 设置日志
 logging.basicConfig(level=logging.INFO)
@@ -54,7 +53,6 @@ def wake_handler():
     
     youtube_url = data.get('url')
     chat_id = data.get('chatId')
-    quality = data.get('quality', 'medium')  # 接收质量参数
     
     if not youtube_url or not chat_id:
         logger.warning(f"Missing parameters: url={youtube_url}, chatId={chat_id}")
@@ -64,22 +62,22 @@ def wake_handler():
         # 在后台线程中处理下载，避免阻塞
         thread = threading.Thread(
             target=download_and_send,
-            args=(youtube_url, chat_id, quality)
+            args=(youtube_url, chat_id)
         )
         thread.start()
         
-        logger.info(f"Started download for URL: {youtube_url} with quality: {quality}")
+        logger.info(f"Started download for URL: {youtube_url}")
         return jsonify({'status': 'processing', 'message': 'Download started'})
     
     except Exception as e:
         logger.error(f"Error starting download: {e}")
         return jsonify({'error': str(e)}), 500
 
-def download_and_send(youtube_url, chat_id, quality='medium'):
+def download_and_send(youtube_url, chat_id):
     """在后台线程中处理下载和发送"""
     try:
         # 下载视频
-        video_path = download_youtube_video(youtube_url, quality)
+        video_path = download_youtube_video(youtube_url)
         
         # 检查文件大小，如果超过45MB则压缩（留一些余量）
         file_size = os.path.getsize(video_path)
@@ -107,30 +105,37 @@ def download_and_send(youtube_url, chat_id, quality='medium'):
         # 发送错误消息到用户
         asyncio.run(send_error_message(chat_id, str(e)))
 
-def download_youtube_video(url, quality='medium'):
+def download_youtube_video(url):
     """使用 yt-dlp 下载视频"""
     with tempfile.NamedTemporaryFile(suffix='.mp4', delete=False) as temp_file:
         temp_path = temp_file.name
     
-    # 更简单的格式选择策略
-    format_map = {
-        'low': 'best[height<=360]',
-        'medium': 'best[height<=720]',
-        'high': 'best[height<=1080]'
-    }
+    # 首先获取可用格式列表
+    format_cmd = [
+        'yt-dlp',
+        '--list-formats',
+        '--cookies', '/app/cookies.txt',
+        url
+    ]
     
-    format_selection = format_map.get(quality, 'best[height<=720]')
+    try:
+        format_result = subprocess.run(format_cmd, check=True, capture_output=True, text=True, timeout=60)
+        logger.info(f"可用格式:\n{format_result.stdout}")
+    except Exception as e:
+        logger.warning(f"无法获取格式列表: {e}")
     
-    # 使用 yt-dlp 下载
+    # 使用与命令行相同的格式选择策略
     cmd = [
         'yt-dlp',
-        '-f', f'{format_selection}+bestaudio',  # 确保同时选择最佳视频和音频
         '--cookies', '/app/cookies.txt',
         '-o', temp_path,
         '--no-warnings',
         '--merge-output-format', 'mp4',
         url
     ]
+    
+    # 记录完整的命令
+    logger.info(f"执行命令: {' '.join(cmd)}")
     
     try:
         result = subprocess.run(cmd, check=True, timeout=300, capture_output=True, text=True)
@@ -144,7 +149,7 @@ def download_youtube_video(url, quality='medium'):
         logger.info(f"下载完成，文件大小: {file_size_mb:.2f} MB")
         
         if file_size_mb == 0:
-            raise Exception('下载的文件大小为0，可能是格式选择问题')
+            raise Exception('下载的文件大小为0')
             
         return temp_path
     except subprocess.TimeoutExpired:
@@ -233,7 +238,6 @@ async def send_to_telegram(chat_id, file_path):
         raise Exception(f'文件太大 ({file_size_mb:.2f} MB)，超过50MB限制')
     
     with open(file_path, 'rb') as video_file:
-        # 移除 timeout 参数，使用默认值
         await bot.send_video(
             chat_id=chat_id,
             video=video_file,
