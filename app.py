@@ -59,18 +59,24 @@ def wake_handler():
         return jsonify({'error': 'Missing parameters'}), 400
     
     try:
-        # 在后台线程中处理下载，避免阻塞
-        thread = threading.Thread(
-            target=download_and_send,
-            args=(youtube_url, chat_id)
-        )
+        # 创建线程但添加异常处理
+        def thread_wrapper():
+            try:
+                download_and_send(youtube_url, chat_id)
+            except Exception as e:
+                logger.error(f"Error in download thread: {e}")
+                # 发送错误消息到 Telegram
+                asyncio.run(send_error_message(chat_id, str(e)))
+        
+        thread = threading.Thread(target=thread_wrapper)
+        thread.daemon = True  # 设置为守护线程，主线程退出时自动结束
         thread.start()
         
         logger.info(f"Started download for URL: {youtube_url}")
         return jsonify({'status': 'processing', 'message': 'Download started'})
     
     except Exception as e:
-        logger.error(f"Error starting download: {e}")
+        logger.error(f"Error starting download thread: {e}")
         return jsonify({'error': str(e)}), 500
 
 def download_and_send(youtube_url, chat_id):
@@ -102,27 +108,13 @@ def download_and_send(youtube_url, chat_id):
         
     except Exception as e:
         logger.error(f"Error in download_and_send: {e}")
-        # 发送错误消息到用户
-        asyncio.run(send_error_message(chat_id, str(e)))
+        # 重新抛出异常，让线程包装器处理
+        raise
 
 def download_youtube_video(url):
     """使用 yt-dlp 下载视频"""
     with tempfile.NamedTemporaryFile(suffix='.mp4', delete=False) as temp_file:
         temp_path = temp_file.name
-    
-    # 首先获取可用格式列表
-    format_cmd = [
-        'yt-dlp',
-        '--list-formats',
-        '--cookies', '/app/cookies.txt',
-        url
-    ]
-    
-    try:
-        format_result = subprocess.run(format_cmd, check=True, capture_output=True, text=True, timeout=60)
-        logger.info(f"可用格式:\n{format_result.stdout}")
-    except Exception as e:
-        logger.warning(f"无法获取格式列表: {e}")
     
     # 使用与命令行相同的格式选择策略
     cmd = [
