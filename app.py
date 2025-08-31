@@ -99,10 +99,11 @@ def download_youtube_video(url):
     with tempfile.NamedTemporaryFile(suffix='.mp4', delete=False) as temp_file:
         temp_path = temp_file.name
     
-    # 使用 yt-dlp 下载
+    # 使用 yt-dlp 下载，添加 cookies 参数
     cmd = [
         'yt-dlp',
         '-f', 'best[filesize<50M]',  # 限制文件大小
+        '--cookies', '/app/cookies.txt',  # 添加 cookies 文件路径
         '-o', temp_path,
         '--no-warnings',
         url
