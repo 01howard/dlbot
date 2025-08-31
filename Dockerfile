@@ -2,7 +2,7 @@ FROM python:3.10-slim
 
 RUN apt-get update && apt-get install -y \
     curl \
-    ffmpeg \
+    ffmpeg \  # 确保安装 ffmpeg
     && rm -rf /var/lib/apt/lists/*
 
 # 安装 yt-dlp
