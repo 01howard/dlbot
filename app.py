@@ -4,6 +4,7 @@ import subprocess
 import tempfile
 import threading
 import asyncio
+import uuid 
 from flask import Flask, request, jsonify
 from telegram import Bot
 from waitress import serve
@@ -126,9 +127,10 @@ def run_download_and_send(youtube_url, chat_id):
 
 def download_youtube_video(url):
     """使用 yt-dlp 下載影片，並返回臨時檔案的路徑。"""
-    with tempfile.NamedTemporaryFile(suffix='.mp4', delete=False) as temp_file:
-        temp_path = temp_file.name
-
+    # 我們不再建立空檔案，而是產生一個獨一無二的路徑字串
+    temp_filename = f"{uuid.uuid4()}.mp4"
+    temp_path = os.path.join(tempfile.gettempdir(), temp_filename)
+    
     cmd = [
         'yt-dlp',
         # 選擇不高於 720p 的最佳畫質影片和最佳音訊
