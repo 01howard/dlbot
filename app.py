@@ -113,24 +113,58 @@ def download_and_send(youtube_url, chat_id):
 
 def download_youtube_video(url):
     """使用 yt-dlp 下载视频"""
+    import shutil
+    
+    # 记录环境信息
+    logger.info(f"Python PATH: {os.environ.get('PATH', '未设置')}")
+    
+    # 获取 yt-dlp 的绝对路径
+    yt_dlp_path = shutil.which('yt-dlp') or '/usr/local/bin/yt-dlp'
+    logger.info(f"yt-dlp 路径: {yt_dlp_path}")
+    
+    # 检查 FFmpeg
+    ffmpeg_path = shutil.which('ffmpeg')
+    logger.info(f"ffmpeg 路径: {ffmpeg_path}")
+    
+    # 创建临时文件
     with tempfile.NamedTemporaryFile(suffix='.mp4', delete=False) as temp_file:
         temp_path = temp_file.name
     
-    # 使用与命令行相同的格式选择策略
+    # 准备环境变量
+    env = os.environ.copy()
+    env['PATH'] = '/usr/local/bin:/usr/bin:/bin:' + env.get('PATH', '')
+    
+    # 构建命令
     cmd = [
-        'yt-dlp',
-        '--cookies', '/app/cookies.txt',
-        '-o', temp_path,
+        yt_dlp_path,
+        '-f', 'bestvideo[height<=720]+bestaudio/best[height<=720]',
+        '--output', temp_path,
         '--no-warnings',
         '--merge-output-format', 'mp4',
+        '--socket-timeout', '30',
+        '--retries', '3',
         url
     ]
     
-    # 记录完整的命令
+    # 只有在cookies文件存在且不为空时添加cookies参数
+    cookies_path = '/app/cookies.txt'
+    if os.path.exists(cookies_path) and os.path.getsize(cookies_path) > 0:
+        cmd.extend(['--cookies', cookies_path])
+    
     logger.info(f"执行命令: {' '.join(cmd)}")
     
+    # 记录当前工作目录
+    original_cwd = os.getcwd()
+    logger.info(f"当前工作目录: {original_cwd}")
+    
     try:
-        result = subprocess.run(cmd, check=True, timeout=300, capture_output=True, text=True)
+        # 切换到临时目录执行
+        os.chdir('/tmp')
+        
+        # 执行命令
+        result = subprocess.run(cmd, check=True, timeout=300, 
+                              capture_output=True, text=True, env=env)
+        
         logger.info(f"yt-dlp 输出: {result.stdout}")
         if result.stderr:
             logger.warning(f"yt-dlp 错误输出: {result.stderr}")
@@ -144,16 +178,20 @@ def download_youtube_video(url):
             raise Exception('下载的文件大小为0')
             
         return temp_path
+        
     except subprocess.TimeoutExpired:
         os.remove(temp_path)
         raise Exception('下载超时，请稍后再试')
     except subprocess.CalledProcessError as e:
         os.remove(temp_path)
         logger.error(f"yt-dlp 命令失败: {e.stderr if e.stderr else e.stdout}")
-        raise Exception(f'下载失败: {e}')
+        raise Exception(f'下载失败: {e.stderr if e.stderr else "未知错误"}')
     except Exception as e:
         os.remove(temp_path)
         raise Exception(f'下载过程中出现错误: {e}')
+    finally:
+        # 恢复原始工作目录
+        os.chdir(original_cwd)
 
 def compress_video(input_path, target_size_mb=45):
     """使用 FFmpeg 压缩视频到指定大小"""
